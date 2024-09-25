@@ -6,16 +6,16 @@ from torch.nn import functional as F
 # hyperparameters (Changed to be able to run on my poor laptop)
 batch_size = 16 # how many independent sequences will we process in parallel?
 block_size = 32 # what is the maximum context length for predictions?
-max_iters = 20000
+max_iters = 10000
 eval_interval = 1000
-learning_rate = 1e-5
+learning_rate = 1e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 64
 n_head = 4
 n_layer = 4
 dropout = 0.0
-checkpoint_path = "model_checkpoint_10+10k.pth" # Change to path of model if you want to load checkpoint
+checkpoint_path = "model_checkpoint.pth" # Change to path of model if you want to load checkpoint
 # ------------
 
 print("Device Being Used:", device)
@@ -89,7 +89,7 @@ class Head(nn.Module):
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        # self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
         self.dropout = nn.Dropout(dropout)
 
@@ -99,9 +99,15 @@ class Head(nn.Module):
         q = self.query(x) # (B,T,C)
         # compute attention scores ("affinities")
         wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+        
+        # create lower triangle mask dynamically
+        mask = torch.tril(torch.ones(T, T, device=x.device))  # (T, T)
+
+        # apply the mask
+        wei = wei.masked_fill(mask == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)
+
         # perform the weighted aggregation of the values
         v = self.value(x) # (B,T,C)
         out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
@@ -164,6 +170,8 @@ class BigramLanguageModel(nn.Module):
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
         self.lm_head = nn.Linear(n_embd, vocab_size)
+        # Initialize memory
+        self.memory = None
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -186,21 +194,53 @@ class BigramLanguageModel(nn.Module):
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens):
+    def generate(self, idx, max_new_tokens, memory_length=64):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
-            # crop idx to the last block_size tokens
-            idx_cond = idx[:, -block_size:]
+
+            # concat memory to the current context
+            if self.memory is not None:
+                idx_cond = torch.cat([self.memory, idx], dim=1)
+            else:
+                # only look at the last block size tokens
+                idx_cond = idx[:, -block_size:]
+
+            # ensure we are not exceeding the block size.
+            if idx_cond.shape[1] > block_size:
+                idx_cond = idx_cond[:, -block_size:]
+
             # get the predictions
             logits, loss = self(idx_cond)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
             probs = F.softmax(logits, dim=-1) # (B, C)
+
+            # Check for invalid probabilities (NaNs or negative values)
+            if torch.isnan(probs).any() or (probs < 0).any():
+                print("Invalid probabilities detected:")
+                print("Probs:", probs)
+                probs = torch.nan_to_num(probs, nan=0.0, posinf=1.0, neginf=0.0)
+            
+            # Normalize the probabilities in case they don't sum to 1
+            probs = probs / probs.sum(dim=-1, keepdim=True)
+
             # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+
+            # Update the memory with new idx
+            if self.memory is not None:
+                self.memory = torch.cat([self.memory, idx_next], dim=1)
+                
+                # check if memory length is over max and cut it
+                if self.memory.shape[1] > memory_length:
+                    self.memory = self.memory[:, -memory_length:]
+            else:
+                self.memory = idx_next
+
+        self.memory = None
         return idx
 
 model = BigramLanguageModel()
