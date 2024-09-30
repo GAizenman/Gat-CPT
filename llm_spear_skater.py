@@ -4,8 +4,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters (Changed to be able to run on my poor laptop)
-batch_size = 16 # how many independent sequences will we process in parallel?
-block_size = 32 # what is the maximum context length for predictions?
+batch_size = 16 # independent sequences processed in parallel
+block_size = 32 # max context length
 max_iters = 10000
 eval_interval = 1000
 learning_rate = 1e-4
@@ -15,18 +15,19 @@ n_embd = 64
 n_head = 4
 n_layer = 4
 dropout = 0.0
-checkpoint_path = "model_checkpoint.pth" # Change to path of model if you want to load checkpoint
+checkpoint_path = "" # Change to path of model if you want to load checkpoint
 # ------------
 
 print("Device Being Used:", device)
 
 torch.manual_seed(1337)
 
+# Uncomment if you need to download input txt:
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
-# here are all the unique characters that occur in this text
+# unique characters in this text
 chars = sorted(list(set(text)))
 vocab_size = len(chars)
 # create a mapping from characters to integers
@@ -41,20 +42,22 @@ n = int(0.9*len(data)) # first 90% will be train, rest val
 train_data = data[:n]
 val_data = data[n:]
 
-# data loading
+# load the data
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
     data = train_data if split == 'train' else val_data
     ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+    x = torch.stack([data[i:i+block_size] for i in ix])     # inputs
+    y = torch.stack([data[i+1:i+block_size+1] for i in ix]) # outputs
     x, y = x.to(device), y.to(device)
     return x, y
 
+# calculate loss
 @torch.no_grad()
 def estimate_loss():
     out = {}
     model.eval()
+    # calculate losses for both train and val sets
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
@@ -62,10 +65,11 @@ def estimate_loss():
             logits, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
+    # continue training
     model.train()
     return out
 
-# save function to save the model for loading later
+# save function to save a checkpoint for loading later
 def save_checkpoint(model, optimizer, filename="model_checkpoint.pth"):
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -74,7 +78,7 @@ def save_checkpoint(model, optimizer, filename="model_checkpoint.pth"):
     torch.save(checkpoint, filename)
     print(f"Checkpoint saved to {filename}")
 
-# Load function for saved checkpoint
+# Load checkpoint from filepath
 def load_checkpoint(model, optimizer, filename="model_checkpoint.pth"):
     checkpoint = torch.load(filename)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -113,8 +117,8 @@ class Head(nn.Module):
         out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
         return out
 
+# multiple heads of self attention in parallel
 class MultiHeadAttention(nn.Module):
-    """ multiple heads of self-attention in parallel """
 
     def __init__(self, num_heads, head_size):
         super().__init__()
@@ -127,8 +131,8 @@ class MultiHeadAttention(nn.Module):
         out = self.dropout(self.proj(out))
         return out
 
+# simple linear layer followed by a non-linearity
 class FeedFoward(nn.Module):
-    """ a simple linear layer followed by a non-linearity """
 
     def __init__(self, n_embd):
         super().__init__()
@@ -142,8 +146,8 @@ class FeedFoward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+# Transformer block: communication followed by computation
 class Block(nn.Module):
-    """ Transformer block: communication followed by computation """
 
     def __init__(self, n_embd, n_head):
         # n_embd: embedding dimension, n_head: the number of heads we'd like
@@ -230,7 +234,7 @@ class BigramLanguageModel(nn.Module):
             # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
 
-            # Update the memory with new idx
+            # update the memory with new idx
             if self.memory is not None:
                 self.memory = torch.cat([self.memory, idx_next], dim=1)
                 
