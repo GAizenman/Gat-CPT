@@ -7,7 +7,7 @@ from torch.nn import functional as F
 batch_size = 16 # independent sequences processed in parallel
 block_size = 32 # max context length
 max_iters = 10000
-eval_interval = 1000
+eval_interval = 500
 learning_rate = 1e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
@@ -162,6 +162,31 @@ class Block(nn.Module):
         x = x + self.sa(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
         return x
+    
+# Early stopping class: keep track of best val loss and stopp if hasn't improved for some time
+class EarlyStopping:
+    def __init__(self, patience=5, verbose=False):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_loss = float('inf')
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        # check if loss improved
+        if val_loss < self.best_loss:
+            self.best_loss = val_loss
+            self.counter = 0
+            if self.verbose:
+                print(f"Validation loss improved: {val_loss:.4f}. Saving model...")
+
+        else:
+            self.counter += 1
+            # stop if showing no improvement over time
+            if self.counter >= self.patience:
+                self.early_stop = True
+                if self.verbose:
+                    print(f"Early stopping triggered. No improvement for {self.patience} evaluations.")
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -260,6 +285,9 @@ if os.path.isfile(checkpoint_path):
     print("Loading model checkpoint...")
     load_checkpoint(model, optimizer, checkpoint_path)
 
+# initialize early stopping
+early_stopping = EarlyStopping(patience=5, verbose=True)
+
 for iter in range(max_iters):
 
     # every once in a while evaluate the loss on train and val sets
@@ -269,6 +297,13 @@ for iter in range(max_iters):
 
         # Save the model and optimizer state
         save_checkpoint(model, optimizer)
+
+        # check for early stopping and break if so
+        early_stopping(losses['val'])
+
+        if early_stopping.early_stop:
+            print("Early stopping triggered.")
+            break
 
     # sample a batch of data
     xb, yb = get_batch('train')

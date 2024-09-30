@@ -5,6 +5,7 @@ Learn about LLMs and create a very simple one using shakesphere transcripts.
 Features Added:
 - save and load checkpoints
 - memory to add context and improve continuity
+- early stop durring training
 
 
 
